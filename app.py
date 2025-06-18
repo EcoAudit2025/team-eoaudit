@@ -642,11 +642,24 @@ if page == "User Profile":
                     user = db.get_user(username, is_public=account_type)
                     if user:
                         st.session_state.current_user = user
-                        account_desc = "public" if user.is_public == "public" else "private"
+                        account_desc = "public" if getattr(user, 'is_public', None) == "public" else "private"
                         st.success(f"Welcome back, {user.username}! (Logged into {account_desc} account)")
+                        
+                        # Show if user has other account type
+                        user_info = db.get_username_account_info(username)
+                        if user_info and user_info['total_accounts'] > 1:
+                            other_type = "private" if account_type == "public" else "public"
+                            st.info(f"You also have a {other_type} account with this username.")
+                        
                         st.rerun()
                     else:
-                        st.error(f"No {account_type} account found for username '{username}'. Please create an account first or try the other account type.")
+                        # Check if user exists with other account type
+                        other_type = "private" if account_type == "public" else "public"
+                        other_user = db.get_user(username, is_public=other_type)
+                        if other_user:
+                            st.error(f"No {account_type} account found for username '{username}', but you have a {other_type} account. Please select the correct account type above.")
+                        else:
+                            st.error(f"No account found for username '{username}'. Please create an account first.")
                 else:
                     st.warning("Please enter a username.")
         
@@ -742,7 +755,14 @@ if page == "User Profile":
                     existing_user = db.get_user(new_username, is_public=new_is_public)
                     if existing_user:
                         account_type_desc = "public" if new_is_public == "public" else "private"
-                        st.error(f"❌ A {account_type_desc} account with username '{new_username}' already exists. Choose a different username or try the other account type.")
+                        st.error(f"❌ A {account_type_desc} account with username '{new_username}' already exists.")
+                        
+                        # Show information about existing accounts
+                        user_info = db.get_username_account_info(new_username)
+                        if user_info:
+                            other_type = "private" if new_is_public == "public" else "public"
+                            if (new_is_public == "public" and user_info['has_private']) or (new_is_public == "private" and user_info['has_public']):
+                                st.info(f"💡 You already have a {other_type} account with this username. You can log in to your existing {other_type} account instead.")
                         st.stop()
                     
                     # Additional username validation
@@ -780,7 +800,13 @@ if page == "User Profile":
     else:
         # User is logged in
         user = st.session_state.current_user
-        st.success(f"Logged in as: **{user.username}**")
+        account_type_desc = "Public" if getattr(user, 'is_public', None) == "public" else "Private"
+        st.success(f"Logged in as: **{user.username}** ({account_type_desc} Account)")
+        
+        # Show account information
+        user_info = db.get_username_account_info(user.username)
+        if user_info and user_info['total_accounts'] > 1:
+            st.info(f"💡 You have both public and private accounts with username '{user.username}'. Currently viewing: {account_type_desc}")
         
         # Display user profile information
         col1, col2 = st.columns(2)
@@ -1776,17 +1802,45 @@ elif page == "My History":
         st.info(f"No usage data found for the selected time range ({time_range}).")
 
 elif page == "Global Monitor":
-    st.header("🌍 Global Environmental Monitor")
+    st.header("🌍 Global Environmental Impact Monitor")
     st.markdown("""
-    View aggregated data from users who have chosen to make their environmental impact public.
-    See how your usage compares with others and learn from top performers.
+    **Welcome to the Global Environmental Community!**
+    
+    Discover how people worldwide are managing their environmental impact. View real data from users who have chosen to share their utility consumption patterns publicly. Learn from eco-leaders, compare your usage, and find inspiration for sustainable living.
     """)
     
-    # Get all public users
-    public_users = db.get_public_users()
+    # Search functionality
+    st.subheader("🔍 Find Environmental Champions")
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        search_term = st.text_input(
+            "Search by username:", 
+            placeholder="Enter a username to find specific users...",
+            help="Search for specific users to see their environmental performance"
+        )
+    with col2:
+        st.write("")  # Spacing
+        search_button = st.button("🔍 Search", type="primary")
+    
+    # Get public users based on search
+    if search_term or search_button:
+        public_users = db.search_public_users(search_term if search_term else "")
+        if search_term:
+            st.success(f"Search results for '{search_term}': {len(public_users)} user(s) found")
+    else:
+        public_users = db.get_public_users()
     
     if not public_users:
-        st.info("No public user data available yet. Encourage others to make their data public!")
+        st.info("""
+        **No public environmental data available yet!**
+        
+        Be the first to share your environmental impact data:
+        1. Create an account and select "Public" visibility
+        2. Track your utility usage (water, electricity, gas)
+        3. Help build a global community of environmental awareness
+        
+        Your public data helps others learn sustainable practices while keeping your personal information private.
+        """)
         st.stop()
     
     # Create global statistics
@@ -1808,15 +1862,17 @@ elif page == "Global Monitor":
                     avg_carbon = sum(carbon_values) / len(carbon_values) if carbon_values else 0
                     
                     global_data.append({
-                        'Username': user.username,
-                        'Location': user.location_type or 'Unknown',
-                        'Household Size': user.household_size or 1,
-                        'Environmental Class': user.environmental_class or 'Not calculated',
-                        'Avg Water (gal)': max(0, int(avg_water)),
-                        'Avg Electricity (kWh)': max(0, int(avg_electricity)),
-                        'Avg Gas (m³)': max(0, int(avg_gas)),
+                        'Username': getattr(user, 'username', 'Unknown'),
+                        'Account Type': 'Public',
+                        'Location': getattr(user, 'location_type', None) or 'Unknown',
+                        'Household Size': getattr(user, 'household_size', None) or 1,
+                        'Environmental Class': getattr(user, 'environmental_class', None) or 'Not calculated',
+                        'Avg Water (gal)': max(0, int(float(avg_water))),
+                        'Avg Electricity (kWh)': max(0, int(float(avg_electricity))),
+                        'Avg Gas (m³)': max(0, int(float(avg_gas))),
                         'Avg Carbon Footprint': round(max(0, float(avg_carbon)), 1),
-                        'Records': len(user_usage)
+                        'Records': len(user_usage),
+                        'Member Since': getattr(user, 'created_at', None).strftime('%Y-%m-%d') if getattr(user, 'created_at', None) else 'Unknown'
                     })
         except Exception as e:
             # Skip users with data issues
@@ -1826,59 +1882,191 @@ elif page == "Global Monitor":
         global_df = pd.DataFrame(global_data)
         
         # Global statistics overview
-        st.subheader("Global Overview")
+        st.subheader("🌟 Community Environmental Impact Overview")
+        
+        # Calculate meaningful statistics
+        total_users = len(global_data)
+        class_a_users = len([data for data in global_data if data['Environmental Class'] == 'A'])
+        class_b_users = len([data for data in global_data if data['Environmental Class'] == 'B'])
+        class_c_users = len([data for data in global_data if data['Environmental Class'] == 'C'])
+        
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Public Users", len(global_data))
+            st.metric(
+                "🌍 Community Members", 
+                total_users,
+                help="Total number of users sharing their environmental data publicly"
+            )
         
         with col2:
-            class_a_count = len([data for data in global_data if data['Environmental Class'] == 'A'])
-            st.metric("Class A Users", class_a_count)
+            eco_percentage = (class_a_users / total_users * 100) if total_users > 0 else 0
+            st.metric(
+                "🌱 Eco Champions", 
+                f"{class_a_users} ({eco_percentage:.0f}%)",
+                help="Users with excellent environmental performance (Class A)"
+            )
         
         with col3:
             if not global_df['Avg Water (gal)'].empty:
                 avg_global_water = global_df['Avg Water (gal)'].mean()
-                st.metric("Global Avg Water", f"{avg_global_water:.0f} gal")
+                st.metric(
+                    "💧 Avg Water Usage", 
+                    f"{avg_global_water:.0f} gal/month",
+                    help="Average monthly water consumption across all public users"
+                )
             else:
-                st.metric("Global Avg Water", "No data")
+                st.metric("💧 Avg Water Usage", "No data")
         
         with col4:
             if not global_df['Avg Carbon Footprint'].empty:
                 avg_global_carbon = global_df['Avg Carbon Footprint'].mean()
-                st.metric("Global Avg Carbon", f"{avg_global_carbon:.1f} kg CO₂")
+                st.metric(
+                    "🌿 Avg Carbon Footprint", 
+                    f"{avg_global_carbon:.1f} kg CO₂",
+                    help="Average monthly carbon emissions from utility usage"
+                )
             else:
-                st.metric("Global Avg Carbon", "No data")
+                st.metric("🌿 Avg Carbon Footprint", "No data")
         
-        # Environmental class distribution
-        st.subheader("Environmental Impact Distribution")
+        # Environmental class distribution with better context
+        st.subheader("🏆 Environmental Performance Distribution")
+        
+        # Create environmental class explanation
+        st.markdown("""
+        **Environmental Performance Classes:**
+        - **Class A (🌱 Excellent)**: Outstanding environmental stewardship - low resource consumption
+        - **Class B (🌿 Good)**: Above-average environmental awareness with room for improvement  
+        - **Class C (🌾 Developing)**: Standard consumption levels - great potential for positive impact
+        """)
+        
         class_counts = global_df['Environmental Class'].value_counts()
         if not class_counts.empty:
-            fig_classes = px.pie(
-                values=class_counts.values,
-                names=class_counts.index,
-                title="Distribution of Environmental Classes",
-                color_discrete_map={'A': 'green', 'B': 'orange', 'C': 'red'}
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                fig_classes = px.pie(
+                    values=class_counts.values,
+                    names=class_counts.index,
+                    title="Community Environmental Performance",
+                    color_discrete_map={'A': '#00CC66', 'B': '#FF9900', 'C': '#FF6B35'}
+                )
+                fig_classes.update_traces(textinfo='label+percent+value')
+                st.plotly_chart(fig_classes, use_container_width=True)
+            
+            with col2:
+                st.markdown("**Class Breakdown:**")
+                for class_name in ['A', 'B', 'C']:
+                    count = class_counts.get(class_name, 0)
+                    percentage = (count / total_users * 100) if total_users > 0 else 0
+                    emoji = {'A': '🌱', 'B': '🌿', 'C': '🌾'}[class_name]
+                    st.write(f"{emoji} **Class {class_name}:** {count} users ({percentage:.1f}%)")
+        else:
+            st.info("No environmental classification data available yet.")
+        
+        # Usage comparison charts with better insights
+        st.subheader("📊 Resource Consumption Insights")
+        
+        tab1, tab2, tab3 = st.tabs(["💧 Water Usage", "⚡ Energy Consumption", "🌍 Location Patterns"])
+        
+        with tab1:
+            st.markdown("**Monthly Water Consumption by Environmental Performance**")
+            if len(global_df) > 0:
+                fig_water = px.box(
+                    global_df,
+                x='Environmental Class',
+                y='Avg Water (gal)',
+                title="Water Usage Distribution Across Performance Classes",
+                color='Environmental Class',
+                color_discrete_map={'A': '#00CC66', 'B': '#FF9900', 'C': '#FF6B35'}
             )
-            st.plotly_chart(fig_classes, use_container_width=True)
+            fig_water.update_layout(
+                xaxis_title="Environmental Performance Class",
+                yaxis_title="Monthly Water Usage (gallons)"
+            )
+            st.plotly_chart(fig_water, use_container_width=True)
+            
+            # Water usage insights
+            if not global_df['Avg Water (gal)'].empty:
+                min_water = global_df['Avg Water (gal)'].min()
+                max_water = global_df['Avg Water (gal)'].max()
+                st.info(f"💡 **Water Usage Range:** {min_water:.0f} - {max_water:.0f} gallons/month. Lower usage typically indicates water-efficient practices.")
         
-        # Usage comparison charts
-        st.subheader("Usage Comparisons")
+        with tab2:
+            st.markdown("**Monthly Electricity Consumption Patterns**")
+            if len(global_df) > 0:
+                fig_electricity = px.scatter(
+                    global_df,
+                    x='Avg Electricity (kWh)',
+                    y='Avg Carbon Footprint',
+                    color='Environmental Class',
+                    size='Household Size',
+                    hover_data=['Username', 'Location'],
+                    title="Electricity Usage vs Carbon Footprint",
+                    color_discrete_map={'A': '#00CC66', 'B': '#FF9900', 'C': '#FF6B35'}
+                )
+                fig_electricity.update_layout(
+                    xaxis_title="Monthly Electricity Usage (kWh)",
+                    yaxis_title="Carbon Footprint (kg CO₂)"
+                )
+                st.plotly_chart(fig_electricity, use_container_width=True)
+                
+                # Energy insights
+                avg_electricity = global_df['Avg Electricity (kWh)'].mean()
+                st.info(f"⚡ **Community Average:** {avg_electricity:.0f} kWh/month. Consider renewable energy and efficient appliances to reduce consumption.")
         
-        # Water usage by environmental class
-        fig_water = px.box(
-            global_df,
-            x='Environmental Class',
-            y='Avg Water (gal)',
-            title="Water Usage by Environmental Class",
-            color='Environmental Class',
-            color_discrete_map={'A': 'green', 'B': 'orange', 'C': 'red'}
-        )
-        st.plotly_chart(fig_water, use_container_width=True)
+        with tab3:
+            st.markdown("**Environmental Performance by Location Type**")
+            if len(global_df) > 0:
+                location_summary = global_df.groupby('Location').agg({
+                    'Avg Water (gal)': 'mean',
+                    'Avg Electricity (kWh)': 'mean',
+                    'Username': 'count'
+                }).round(1)
+                location_summary.columns = ['Avg Water (gal)', 'Avg Electricity (kWh)', 'User Count']
+                location_summary = location_summary.sort_values('User Count', ascending=False)
+                
+                st.dataframe(location_summary, use_container_width=True)
+                st.info("🏙️ **Location Insights:** Different living environments often have varying resource consumption patterns due to infrastructure and lifestyle factors.")
         
-        # Electricity usage by environmental class
-        fig_electricity = px.box(
-            global_df,
+        # Top performers section with more context
+        st.subheader("🏆 Community Environmental Champions")
+        st.markdown("*Learn from users who are leading the way in sustainable living*")
+        
+        if len(global_df) > 0:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                water_leader = global_df.loc[global_df['Avg Water (gal)'].idxmin()]
+                st.metric(
+                    "💧 Water Conservation Champion", 
+                    water_leader['Username'], 
+                    f"{water_leader['Avg Water (gal)']} gal/month",
+                    help="User with the lowest average monthly water consumption"
+                )
+                st.caption(f"📍 Location: {water_leader['Location']}")
+            
+            with col2:
+                electricity_leader = global_df.loc[global_df['Avg Electricity (kWh)'].idxmin()]
+                st.metric(
+                    "⚡ Energy Efficiency Champion", 
+                    electricity_leader['Username'], 
+                    f"{electricity_leader['Avg Electricity (kWh)']} kWh/month",
+                    help="User with the lowest average monthly electricity consumption"
+                )
+                st.caption(f"📍 Location: {electricity_leader['Location']}")
+            
+            with col3:
+                carbon_leader = global_df.loc[global_df['Avg Carbon Footprint'].idxmin()]
+                st.metric(
+                    "🌱 Carbon Footprint Champion", 
+                    carbon_leader['Username'], 
+                    f"{carbon_leader['Avg Carbon Footprint']} kg CO₂/month",
+                    help="User with the lowest average monthly carbon emissions"
+                )
+                st.caption(f"📍 Location: {carbon_leader['Location']}")
+        else:
+            st.info("Environmental champions will appear here once users start sharing their data!")
             x='Environmental Class',
             y='Avg Electricity (kWh)',
             title="Electricity Usage by Environmental Class",
@@ -1914,34 +2102,127 @@ elif page == "Global Monitor":
             st.metric("🌱 Carbon Footprint Leader", carbon_leader['Username'], f"{carbon_leader['Avg Carbon Footprint']} kg CO₂")
         
         # Individual user analysis section
-        st.subheader("👥 Individual User Analysis")
+        st.subheader("👥 User Spotlight & AI Insights")
+        st.markdown("*Get detailed insights about specific community members*")
         
-        # Select user for detailed view
-        selected_user = st.selectbox("Select a user to view their AI analysis:", 
-                                   options=global_df['Username'].tolist())
+        if len(global_df) > 0:
+            selected_user = st.selectbox(
+                "Choose a user to view detailed environmental insights:", 
+                options=[""] + global_df['Username'].tolist(),
+                help="Select any user to see their AI-generated environmental analysis"
+            )
+            
+            if selected_user:
+                # Get the public account for this user
+                user_obj = db.get_user(selected_user, is_public='public')
+                
+                # Show user summary card
+                user_data = global_df[global_df['Username'] == selected_user].iloc[0]
+                
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.markdown(f"**👤 {selected_user}**")
+                    st.write(f"📍 **Location:** {user_data['Location']}")
+                    st.write(f"👥 **Household:** {user_data['Household Size']} people")
+                    st.write(f"🏆 **Class:** {user_data['Environmental Class']}")
+                    st.write(f"📅 **Member since:** {user_data['Member Since']}")
+                
+                with col2:
+                    st.markdown("**📊 Monthly Resource Usage:**")
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.metric("💧 Water", f"{user_data['Avg Water (gal)']} gal")
+                    with col_b:
+                        st.metric("⚡ Electricity", f"{user_data['Avg Electricity (kWh)']} kWh")
+                    with col_c:
+                        st.metric("🌿 Carbon", f"{user_data['Avg Carbon Footprint']} kg CO₂")
+                
+                # AI Analysis section
+                if user_obj and getattr(user_obj, 'ai_analysis', None):
+                    st.markdown("**🤖 AI Environmental Analysis:**")
+                    st.info(getattr(user_obj, 'ai_analysis', 'No analysis available'))
+                else:
+                    st.markdown("**🤖 AI Environmental Analysis:**")
+                    st.warning(f"AI analysis not yet available for {selected_user}. Analysis is generated after sufficient usage data is collected.")
+        else:
+            st.info("User analysis will be available once community members start sharing their data.")
         
-        if selected_user:
-            user_obj = db.get_user(selected_user)
-            if user_obj and user_obj.ai_analysis:
-                st.write(f"**AI Analysis for {selected_user}:**")
-                st.info(user_obj.ai_analysis)
-            else:
-                st.write(f"No AI analysis available for {selected_user}")
+        # Community insights section
+        st.subheader("🤝 Community Insights")
         
-        # Full data table
-        st.subheader("Complete Public Data")
-        # Sort by environmental class and carbon footprint
-        display_df = global_df.sort_values(['Environmental Class', 'Avg Carbon Footprint'])
-        st.dataframe(display_df, use_container_width=True)
+        all_usernames = list(set([getattr(user, 'username', 'Unknown') for user in public_users if getattr(user, 'username', 'Unknown') != 'Unknown']))
+        dual_account_users = []
         
-        # Download global data
-        csv = display_df.to_csv(index=False)
-        st.download_button(
-            label="Download Global Data as CSV",
-            data=csv,
-            file_name="global_environmental_data.csv",
-            mime="text/csv"
-        )
+        for username in all_usernames:
+            if db.username_has_both_accounts(username):
+                dual_account_users.append(username)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🌍 Community Statistics:**")
+            st.write(f"👥 **Active public accounts:** {len(public_users)}")
+            st.write(f"🔤 **Unique usernames:** {len(all_usernames)}")
+            st.write(f"⚖️ **Users with dual accounts:** {len(dual_account_users)}")
+            st.write(f"📈 **Total data records:** {sum([data['Records'] for data in global_data])}")
+        
+        with col2:
+            st.markdown("**💡 Community Benefits:**")
+            st.write("🌱 Share best practices for sustainability")
+            st.write("📊 Compare your impact with similar households")
+            st.write("🎯 Set goals based on top performers")
+            st.write("🌍 Contribute to global environmental awareness")
+        
+        if dual_account_users:
+            st.info(f"🔄 **Multi-account users:** {', '.join(dual_account_users)} maintain both public and private profiles for different purposes.")
+        
+        # Complete data table with better presentation
+        st.subheader("📋 Complete Community Environmental Data")
+        st.markdown("*Comprehensive view of all public environmental data - sortable and downloadable*")
+        
+        if len(global_df) > 0:
+            # Sort by environmental class and carbon footprint
+            try:
+                display_df = global_df.sort_values(['Environmental Class', 'Avg Carbon Footprint'])
+            except:
+                # Fallback if sorting fails
+                display_df = global_df
+            
+            # Color-code the dataframe for better readability
+            st.markdown("**Legend:** 🌱 Class A (Excellent) | 🌿 Class B (Good) | 🌾 Class C (Developing)")
+            
+            # Display the data with custom formatting
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Username": st.column_config.TextColumn("👤 User", width="small"),
+                    "Environmental Class": st.column_config.TextColumn("🏆 Class", width="small"),
+                    "Location": st.column_config.TextColumn("📍 Location", width="medium"),
+                    "Household Size": st.column_config.NumberColumn("👥 Size", width="small"),
+                    "Avg Water (gal)": st.column_config.NumberColumn("💧 Water (gal)", width="small"),
+                    "Avg Electricity (kWh)": st.column_config.NumberColumn("⚡ Electric (kWh)", width="small"),
+                    "Avg Gas (m³)": st.column_config.NumberColumn("🔥 Gas (m³)", width="small"),
+                    "Avg Carbon Footprint": st.column_config.NumberColumn("🌿 Carbon (kg)", width="small"),
+                    "Records": st.column_config.NumberColumn("📊 Data Points", width="small"),
+                    "Member Since": st.column_config.DateColumn("📅 Joined", width="small")
+                }
+            )
+            
+            # Download section
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                csv = display_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Data",
+                    data=csv,
+                    file_name=f"ecoaudit_global_data_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    help="Download complete environmental data as CSV file"
+                )
+        else:
+            st.info("Community data table will appear here once users start sharing their environmental impact data.")
     else:
         st.info("No users with complete usage data found. Encourage users to track their utility usage and make their data public to contribute to global insights!")
 

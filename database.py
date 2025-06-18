@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Text, ForeignKey, update
+from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Text, ForeignKey, update, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session as SQLAlchemySession
 from datetime import datetime
@@ -18,8 +18,8 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    username = Column(String(50), unique=True, nullable=False)
-    email = Column(String(100), unique=True)
+    username = Column(String(50), nullable=False)  # Removed unique constraint
+    email = Column(String(100))  # Removed unique constraint to allow same email for both accounts
     location_type = Column(String(100))  # Urban, Suburban, Rural, etc.
     climate_zone = Column(String(100))   # Tropical, Temperate, etc.
     adults = Column(Integer, default=1)
@@ -39,7 +39,12 @@ class User(Base):
     utility_records = relationship("UtilityUsage", back_populates="user")
     
     def __repr__(self):
-        return f"<User(username='{self.username}', type='{self.household_type}', class='{self.environmental_class}')>"
+        return f"<User(username='{self.username}', account_type='{self.is_public}', type='{self.household_type}', class='{self.environmental_class}')>"
+    
+    # Add a unique constraint for username + is_public combination
+    __table_args__ = (
+        UniqueConstraint('username', 'is_public', name='unique_username_account_type'),
+    )
 
 class UtilityUsage(Base):
     __tablename__ = 'utility_usage'
@@ -159,12 +164,15 @@ def update_user_profile(user_id, **kwargs):
         
         # Recalculate household size if family composition changed
         if any(field in kwargs for field in ['adults', 'children', 'seniors']):
-            user.household_size = (user.adults or 0) + (user.children or 0) + (user.seniors or 0)
+            adults = getattr(user, 'adults', 0) or 0
+            children = getattr(user, 'children', 0) or 0
+            seniors = getattr(user, 'seniors', 0) or 0
+            setattr(user, 'household_size', adults + children + seniors)
         
         # Handle energy features JSON
         if 'energy_features' in kwargs:
             import json
-            user.energy_features = json.dumps(kwargs['energy_features']) if kwargs['energy_features'] else None
+            setattr(user, 'energy_features', json.dumps(kwargs['energy_features']) if kwargs['energy_features'] else None)
         
         session.commit()
         session.refresh(user)
@@ -178,16 +186,71 @@ def get_all_users():
     """Get all users"""
     return session.query(User).all()
 
-def get_public_users():
-    """Get all users who have made their data public"""
-    return session.query(User).filter(User.is_public == 'public').all()
+def get_public_users(search_term=None):
+    """Get all users who have made their data public, with optional search"""
+    query = session.query(User).filter(User.is_public == 'public')
+    
+    if search_term:
+        search_pattern = f"%{search_term.lower()}%"
+        query = query.filter(
+            User.username.ilike(search_pattern)
+        )
+    
+    return query.all()
+
+def search_public_users(search_term):
+    """Search for public users by username"""
+    if not search_term:
+        return get_public_users()
+    
+    search_pattern = f"%{search_term.lower()}%"
+    return session.query(User).filter(
+        User.is_public == 'public',
+        User.username.ilike(search_pattern)
+    ).all()
+
+def get_user_accounts(username):
+    """Get all accounts (public and private) for a username"""
+    return session.query(User).filter(User.username == username).all()
+
+def username_has_both_accounts(username):
+    """Check if a username has both public and private accounts"""
+    accounts = get_user_accounts(username)
+    account_types = [account.is_public for account in accounts]
+    return 'public' in account_types and 'private' in account_types
+
+def get_username_account_info(username):
+    """Get detailed account information for a username"""
+    accounts = get_user_accounts(username)
+    if not accounts:
+        return None
+    
+    info = {
+        'username': username,
+        'has_public': False,
+        'has_private': False,
+        'public_account': None,
+        'private_account': None,
+        'total_accounts': len(accounts)
+    }
+    
+    for account in accounts:
+        account_type = getattr(account, 'is_public', None)
+        if account_type == 'public':
+            info['has_public'] = True
+            info['public_account'] = account
+        elif account_type == 'private':
+            info['has_private'] = True
+            info['private_account'] = account
+    
+    return info
 
 def update_user_environmental_class(user_id, env_class, ai_analysis):
     """Update user's environmental class and AI analysis"""
     user = session.query(User).filter(User.id == user_id).first()
     if user:
-        user.environmental_class = env_class
-        user.ai_analysis = ai_analysis
+        setattr(user, 'environmental_class', env_class)
+        setattr(user, 'ai_analysis', ai_analysis)
         session.commit()
         return user
     return None
