@@ -2068,6 +2068,9 @@ elif page == "Global Monitor":
         else:
             st.info("Environmental champions will appear here once users start sharing their data!")
             x='Environmental Class',
+        fig_electricity = px.bar(
+            global_df,
+            x='Environmental Class',
             y='Avg Electricity (kWh)',
             title="Electricity Usage by Environmental Class",
             color='Environmental Class',
